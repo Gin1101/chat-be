@@ -1,0 +1,53 @@
+version: '3.6'
+services:
+  node-app:
+    image: node:16
+    volumes:
+      - .:/usr/src/service/
+      - node_modules:/usr/src/service/node_modules
+    working_dir: /usr/src/service/
+    links:
+      - mongo-db
+    depends_on:
+      - mongo-db
+    env_file:
+      - .env
+    ports:
+      - $SERVER_PORT:$SERVER_PORT
+    environment:
+      REDIS_URL_CONNECT: redis://:$REDIS_PASS@cache:6379/0
+      MONGO_URL_CONNECT: mongodb://$MONGODB_USER:$MONGODB_PASSWORD@mongo-db:27017
+    command: bash -c "npm i && npm run database && npm run dev"
+    container_name: chat-node-app
+    
+  mongo-db:
+    image: mongo
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - mongodb_chat:/data/db
+    ports:
+      - 27019:27017
+    command: mongod --quiet --logpath /dev/null
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: $MONGODB_USER
+      MONGO_INITDB_ROOT_PASSWORD: $MONGODB_PASSWORD
+    container_name: chat-mongodb
+
+  cache:
+    image: redis:6.2-alpine
+    restart: always
+    ports:
+      - '6380:6379'
+    env_file:
+      - .env
+    command: redis-server --save 20 1 --loglevel warning --requirepass $REDIS_PASS
+    volumes: 
+      - cache:/data
+    container_name: chat-redis
+volumes:
+  node_modules:
+  mongodb_chat:
+  cache:
+    driver: local
