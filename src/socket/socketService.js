@@ -1,11 +1,9 @@
 import WebSocket from 'ws';
 import http from 'http';
-import redis from 'redis';
 import redisClient from "../database/redisClient"
-import MessageModel from './models/Messages'; // MongoDB model
+import Message from './models/Messages'; // MongoDB model
 import { verifyToken } from '../middleware/auth'; // Phương thức xác thực token
 
-// Kết nối với Redis
 const pubsub = redisClient.duplicate();
 pubsub.connected();
 
