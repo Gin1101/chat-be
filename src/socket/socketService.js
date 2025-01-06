@@ -1,77 +1,111 @@
-import WebSocket from 'ws';
-import http from 'http';
-import redisClient from "../database/redisClient"
-import Message from './models/Messages'; // MongoDB model
-import { verifyToken } from '../middleware/auth'; // Phương thức xác thực token
+import WebSocket from "ws";
+import redisClient from "../database/redisClient.js"
+import Users from "../models/Users.js";
+import { verifyToken } from "../middleware/auth.js";
+import { checkRole } from "#src/helpers/roles.js";
+// import ChatWS from "./chatSocket.js";
+// import UserWs from "./userSocket.js";
+// import UserModel from "#src/models/Users.js";
 
-const pubsub = redisClient.duplicate();
-pubsub.connected();
+class SocketService {
+    constructor(server) {
+        this.wss = new WebSocket.Server({ server });
 
-// Tạo WebSocket server
-const server = http.createServer();
-const wss = new WebSocket.Server({ server });
+        // Redis Pub/Sub
+        this.redisSubscriber = redisClient.duplicate();
+        this.redisPublisher = redisClient;
 
-// Hàm xác thực JWT
-const authenticateUser = (token) => {
-  try {
-    return verifyToken(token); // Kiểm tra token JWT
-  } catch (err) {
-    return null;
-  }
-};
+        this.redisSubscriber.subscribe("chat");
+        this.redisSubscriber.on("message", this.handleRedisMessage.bind(this));
 
-wss.on('connection', (ws, req) => {
-  // Xử lý xác thực người dùng khi kết nối
-  const token = req.headers['sec-websocket-protocol']; // Token được gửi qua header
-  const user = authenticateUser(token);
+        this.wss.on("connection", (ws, req) => {
+            ws.isAlive = true;
+            this.verifyMiddleware(ws, req);
 
-  if (!user) {
-    ws.close(); // Đóng kết nối nếu không xác thực được user
-    return;
-  }
+            // Lắng nghe các sự kiện từ client
+            this.onConnect(ws);
 
-  ws.user = user; // Gán thông tin người dùng vào WebSocket instance
+            // Heartbeat (giữ kết nối sống)
+            ws.on("pong", () => {
+                ws.isAlive = true;
+            });
+        });
 
-  console.log('User connected: ', user.username);
-
-  // Lắng nghe tin nhắn từ client
-  ws.on('message', async (message) => {
-    const data = JSON.parse(message);
-
-    // Lưu tin nhắn vào MongoDB
-    const newMessage = new MessageModel({
-      sender: user.username,
-      content: data.content,
-      recipient: data.recipient,
-      timestamp: new Date(),
-    });
-    await newMessage.save();
-
-    // Publish tin nhắn lên Redis
-    pubsub.publish('chat', JSON.stringify({ message: newMessage, recipient: data.recipient }));
-
-    // Gửi phản hồi cho client
-    ws.send(JSON.stringify({ status: 'ok', message: newMessage }));
-  });
-
-  // Lắng nghe sự kiện disconnect
-  ws.on('close', () => {
-    console.log(`User ${user.username} disconnected`);
-  });
-});
-
-// Lắng nghe Redis để phát tin nhắn tới các client
-pubsub.subscribe('chat', (message) => {
-  const parsedMessage = JSON.parse(message);
-
-  // Phát tin nhắn cho các client
-  wss.clients.forEach((client) => {
-    if (client.readyState === WebSocket.OPEN && client.user.username === parsedMessage.recipient) {
-      client.send(JSON.stringify({ message: parsedMessage.message }));
+        // Heartbeat interval
+        setInterval(() => {
+            this.wss.clients.forEach((client) => {
+                if (!client.isAlive) return client.terminate();
+                client.isAlive = false;
+                client.ping();
+            });
+        }, 30000);
     }
-  });
-});
 
-server.listen(8080, () => {
-  console.log('Server is running on ws://localhost:8080');
-});
+    async verifyToken(ws, token) {
+        try {
+            const jwtDecode = verifyToken(token);
+            const userById = await Users.findById(jwtDecode.id).lean();
+            if (!userById) throw new Error("User not found");
+            ws.user = { ...userById, id: String(userById._id) };
+            ws.auth = true;
+
+            ws.isAdmin = !!checkRole("admin", userById.role);
+        } catch (error) {
+            console.error("Token verification error:", error);
+            ws.close(1008, "Authorization failed"); // Đóng kết nối với mã lỗi
+        }
+    }
+
+    async verifyMiddleware(ws, req) {
+        try {
+            const token = req.headers.token || new URL(req.url, `http://${req.headers.host}`).searchParams.get("token");
+            if (!token) throw new Error("Token not found");
+
+            await this.verifyToken(ws, token);
+        } catch (error) {
+            console.error("Middleware error:", error);
+            ws.close(1008, "Authorization error");
+        }
+    }
+
+    onConnect(ws) {
+        ws.on("message", async (message) => {
+            try {
+                const { event, data } = JSON.parse(message);
+
+                if (event === "chat") {
+                    // Gửi tin nhắn tới Redis Pub/Sub
+                    this.redisPublisher.publish("chat", JSON.stringify({ sender: ws.user.id, data }));
+
+                    // Phản hồi lại client gửi tin
+                    ws.send(JSON.stringify({ status: "success", event, data }));
+                }
+            } catch (error) {
+                console.error("Message handling error:", error);
+            }
+        });
+
+        ws.on("close", () => this.onDisconnect(ws));
+    }
+
+    onDisconnect(ws) {
+        console.log("Client disconnected:", ws.user?.id || "Unknown");
+    }
+
+    // Xử lý tin nhắn Redis nhận được
+    handleRedisMessage(channel, message) {
+        if (channel === "chat") {
+            const parsedMessage = JSON.parse(message);
+            const { sender, data } = parsedMessage;
+
+            // Phát tin nhắn tới tất cả client WebSocket
+            this.wss.clients.forEach((client) => {
+                if (client.readyState === WebSocket.OPEN) {
+                    client.send(JSON.stringify({ event: "chat", sender, data }));
+                }
+            });
+        }
+    }
+}
+
+export default SocketService;

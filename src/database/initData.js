@@ -6,6 +6,7 @@ const initProducts = async () => {
     try {
        
         const existUser = await Users.findOne({role: 1});
+        console.log(existUser)
         if(!existUser) {
             await new Users({
                 idUser: "1",

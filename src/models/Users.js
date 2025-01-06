@@ -7,7 +7,7 @@ mongooseLong(mongoose)
 
 const Schema = new mongoose.Schema({
 
-    userId: { type: String, unique: true, required: true }, // userId
+    idUser: { type: String, unique: true, required: true },
 
     username: { type: String, unique: true, required: true },
 
@@ -17,7 +17,7 @@ const Schema = new mongoose.Schema({
 
     invite_from_code: { type: String }, // Mã người giới thiệu
 
-    role: { type: Number, require: true, enum: [0, 1, 2], default: 0 },  // 0: user, 1: admin
+    role: { type: Number, require: true, enum: [0, 1, 2], default: 0 },  // Vai trò của người dùng
 
     isDisabled: { type: Number, default: 0 },
 
@@ -31,6 +31,6 @@ Schema.methods.comparePassword = function (password) {
     return bcrypt.compareSync(password, this.password)
 };
 
-const model = mongoose.model("Users", Schema);
+const model = mongoose.model("User", Schema);
 
 export default model
